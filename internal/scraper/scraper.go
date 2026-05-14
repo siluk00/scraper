@@ -2,69 +2,113 @@ package scraper
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/net/html"
 )
 
 type Product struct {
-	Title       string `json:"title"`
-	Price       string `json:"price"`
-	Description string `json:"description"`
+	Title       string  `json:"title"`
+	Price       float64 `json:"price"`
+	Description string  `json:"description"`
+	Rating      int     `json:"rating"`
+	Reviews     int     `json:"reviews"`
 }
 
-func ScrapeLenovo(baseURL string) ([]Product, error) {
+func ScrapeProducts(baseURL string, brandFilter string) ([]Product, error) {
 	var allProducts []Product
 	page := 1
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	slog.Info("starting scraper", "brand", brandFilter, "url", baseURL)
 
 	for {
 		url := fmt.Sprintf("%s?page=%d", baseURL, page)
-		resp, err := http.Get(url)
-		if err != nil {
-			return nil, err
-		}
+		slog.Debug("fetching page", "page", page, "url", url)
+		
+		productsOnPage, stop, err := func(targetURL string) ([]Product, bool, error) {
+			req, err := http.NewRequest("GET", targetURL, nil)
+			if err != nil {
+				return nil, false, err
+			}
 
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			break // Assume we reached the end of pages
-		}
+			resp, err := client.Do(req)
+			if err != nil {
+				return nil, false, err
+			}
+			defer resp.Body.Close()
 
-		doc, err := html.Parse(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return nil, err
-		}
+			if resp.StatusCode != http.StatusOK {
+				slog.Warn("pagination stopped", "page", page, "status", resp.StatusCode)
+				return nil, true, nil
+			}
 
-		foundOnPage := 0
-		var f func(*html.Node)
-		f = func(n *html.Node) {
-			if n.Type == html.ElementNode && hasClass(n, "thumbnail") {
-				p := extractProduct(n)
-				// Match Lenovo, ThinkPad or IdeaPad which are Lenovo brands
-				titleLower := strings.ToLower(p.Title)
-				descLower := strings.ToLower(p.Description)
-				if strings.Contains(titleLower, "lenovo") ||
-					strings.Contains(titleLower, "thinkpad") ||
-					strings.Contains(titleLower, "ideapad") ||
-					strings.Contains(descLower, "lenovo") {
-					allProducts = append(allProducts, p)
+			doc, err := html.Parse(resp.Body)
+			if err != nil {
+				return nil, false, err
+			}
+
+			var pageProducts []Product
+			var f func(*html.Node)
+			f = func(n *html.Node) {
+				if n.Type == html.ElementNode && hasClass(n, "thumbnail") {
+					p := extractProduct(n)
+					if brandMatch(p, brandFilter) {
+						pageProducts = append(pageProducts, p)
+					}
 				}
-				foundOnPage++
+				for c := n.FirstChild; c != nil; c = c.NextSibling {
+					f(c)
+				}
 			}
-			for c := n.FirstChild; c != nil; c = c.NextSibling {
-				f(c)
-			}
-		}
-		f(doc)
+			f(doc)
 
-		if foundOnPage == 0 {
+			slog.Info("page processed", "page", page, "matches", len(pageProducts))
+			return pageProducts, len(pageProducts) == 0 && page > 1, nil
+		}(url)
+
+		if err != nil {
+			slog.Error("scrape failed", "page", page, "error", err)
+			return nil, err
+		}
+		if stop {
+			break
+		}
+
+		allProducts = append(allProducts, productsOnPage...)
+		if len(productsOnPage) == 0 && page > 1 {
 			break
 		}
 		page++
 	}
 
+	slog.Info("scraping completed", "total_products", len(allProducts))
 	return allProducts, nil
+}
+
+func brandMatch(p Product, brand string) bool {
+	if brand == "" {
+		return true
+	}
+	titleLower := strings.ToLower(p.Title)
+	descLower := strings.ToLower(p.Description)
+	brandLower := strings.ToLower(brand)
+
+	if strings.Contains(titleLower, brandLower) || strings.Contains(descLower, brandLower) {
+		return true
+	}
+
+	// Lógica especial para Lenovo
+	if brandLower == "lenovo" {
+		if strings.Contains(titleLower, "thinkpad") || strings.Contains(titleLower, "ideapad") {
+			return true
+		}
+	}
+	return false
 }
 
 func hasClass(n *html.Node, className string) bool {
@@ -93,10 +137,16 @@ func extractProduct(n *html.Node) Product {
 				}
 			}
 			if hasClass(m, "price") {
-				p.Price = getText(m)
+				priceStr := strings.TrimPrefix(getText(m), "$")
+				p.Price, _ = strconv.ParseFloat(priceStr, 64)
 			}
 			if hasClass(m, "description") {
 				p.Description = getText(m)
+			}
+			if hasClass(m, "ratings") {
+				// Extrair reviews e rating
+				p.Reviews = extractReviews(m)
+				p.Rating = extractRating(m)
 			}
 		}
 		for c := m.FirstChild; c != nil; c = c.NextSibling {
@@ -105,6 +155,40 @@ func extractProduct(n *html.Node) Product {
 	}
 	f(n)
 	return p
+}
+
+func extractReviews(n *html.Node) int {
+	text := getText(n)
+	// Exemplo: "4 reviews"
+	fields := strings.Fields(text)
+	if len(fields) > 0 {
+		count, _ := strconv.Atoi(fields[0])
+		return count
+	}
+	return 0
+}
+
+func extractRating(n *html.Node) int {
+	// O rating geralmente está em spans com estrelas
+	// <p data-rating="3">...
+	var rating int
+	var f func(*html.Node)
+	f = func(m *html.Node) {
+		if m.Type == html.ElementNode && m.Data == "p" {
+			val := getAttr(m, "data-rating")
+			if val != "" {
+				rating, _ = strconv.Atoi(val)
+			}
+		}
+		// Alternativa: contar spans com class "glyphicon-star"
+		if rating == 0 {
+			for c := m.FirstChild; c != nil; c = c.NextSibling {
+				f(c)
+			}
+		}
+	}
+	f(n)
+	return rating
 }
 
 func getAttr(n *html.Node, key string) string {
@@ -129,4 +213,9 @@ func getText(n *html.Node) string {
 	}
 	f(n)
 	return strings.TrimSpace(b.String())
+}
+
+// Mantendo compatibilidade
+func ScrapeLenovo(baseURL string) ([]Product, error) {
+	return ScrapeProducts(baseURL, "lenovo")
 }

@@ -5,5 +5,5 @@ import (
 )
 
 func main() {
-	api.StartServer(":8080")
+	api.StartServer()
 }
