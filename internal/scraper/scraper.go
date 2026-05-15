@@ -4,33 +4,28 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/siluk00/scraper/internal/models"
 	"golang.org/x/net/html"
 )
 
-type Product struct {
-	Title       string  `json:"title"`
-	Price       float64 `json:"price"`
-	Description string  `json:"description"`
-	Rating      int     `json:"rating"`
-	Reviews     int     `json:"reviews"`
-}
-
-func ScrapeProducts(baseURL string, brandFilter string) ([]Product, error) {
-	var allProducts []Product
+func ScrapeProducts(baseURL string, brandFilter string) ([]models.Product, error) {
+	var allProducts []models.Product
 	page := 1
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	slog.Info("starting scraper", "brand", brandFilter, "url", baseURL)
 
+	// o primeiro for é um loop por página
 	for {
 		url := fmt.Sprintf("%s?page=%d", baseURL, page)
 		slog.Debug("fetching page", "page", page, "url", url)
-		
-		productsOnPage, stop, err := func(targetURL string) ([]Product, bool, error) {
+
+		productsOnPage, stop, err := func(targetURL string) ([]models.Product, bool, error) {
 			req, err := http.NewRequest("GET", targetURL, nil)
 			if err != nil {
 				return nil, false, err
@@ -52,7 +47,8 @@ func ScrapeProducts(baseURL string, brandFilter string) ([]Product, error) {
 				return nil, false, err
 			}
 
-			var pageProducts []Product
+			// essa é a função recursiva que vai atravesssar os nodes da arvore html
+			var pageProducts []models.Product
 			var f func(*html.Node)
 			f = func(n *html.Node) {
 				if n.Type == html.ElementNode && hasClass(n, "thumbnail") {
@@ -80,17 +76,17 @@ func ScrapeProducts(baseURL string, brandFilter string) ([]Product, error) {
 		}
 
 		allProducts = append(allProducts, productsOnPage...)
-		if len(productsOnPage) == 0 && page > 1 {
-			break
-		}
 		page++
 	}
 
 	slog.Info("scraping completed", "total_products", len(allProducts))
+	sort.Slice(allProducts, func(i, j int) bool {
+		return allProducts[i].Price < allProducts[j].Price
+	})
 	return allProducts, nil
 }
 
-func brandMatch(p Product, brand string) bool {
+func brandMatch(p models.Product, brand string) bool {
 	if brand == "" {
 		return true
 	}
@@ -125,8 +121,8 @@ func hasClass(n *html.Node, className string) bool {
 	return false
 }
 
-func extractProduct(n *html.Node) Product {
-	var p Product
+func extractProduct(n *html.Node) models.Product {
+	var p models.Product
 	var f func(*html.Node)
 	f = func(m *html.Node) {
 		if m.Type == html.ElementNode {
@@ -135,6 +131,7 @@ func extractProduct(n *html.Node) Product {
 				if p.Title == "" {
 					p.Title = getText(m)
 				}
+				p.Url = "https://webscraper.io" + getAttr(m, "href")
 			}
 			if hasClass(m, "price") {
 				priceStr := strings.TrimPrefix(getText(m), "$")
@@ -175,17 +172,16 @@ func extractRating(n *html.Node) int {
 	var f func(*html.Node)
 	f = func(m *html.Node) {
 		if m.Type == html.ElementNode && m.Data == "p" {
-			val := getAttr(m, "data-rating")
-			if val != "" {
+			if val := getAttr(m, "data-rating"); val != "" {
 				rating, _ = strconv.Atoi(val)
+				return
 			}
 		}
 		// Alternativa: contar spans com class "glyphicon-star"
-		if rating == 0 {
-			for c := m.FirstChild; c != nil; c = c.NextSibling {
-				f(c)
-			}
+		for c := m.FirstChild; c != nil; c = c.NextSibling {
+			f(c)
 		}
+
 	}
 	f(n)
 	return rating
@@ -216,6 +212,6 @@ func getText(n *html.Node) string {
 }
 
 // Mantendo compatibilidade
-func ScrapeLenovo(baseURL string) ([]Product, error) {
+func ScrapeLenovo(baseURL string) ([]models.Product, error) {
 	return ScrapeProducts(baseURL, "lenovo")
 }

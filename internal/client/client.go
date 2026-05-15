@@ -4,15 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-)
+	"time"
 
-type Product struct {
-	Title       string  `json:"title"`
-	Price       float64 `json:"price"`
-	Description string  `json:"description"`
-	Rating      int     `json:"rating"`
-	Reviews     int     `json:"reviews"`
-}
+	"github.com/siluk00/scraper/internal/models"
+)
 
 type ScraperClient struct {
 	BaseURL string
@@ -23,12 +18,13 @@ func NewScraperClient(baseURL string) *ScraperClient {
 	return &ScraperClient{BaseURL: baseURL}
 }
 
-func (c *ScraperClient) GetProducts(brand string) ([]Product, error) {
+func (c *ScraperClient) GetProducts(brand string) ([]models.Product, error) {
 	// Por enquanto a API suporta apenas /lenovo fixo,
 	// mas o cliente está preparado para expansão.
 	url := fmt.Sprintf("%s/%s", c.BaseURL, brand)
+	httpClient := &http.Client{Timeout: 10 * time.Second}
 
-	resp, err := http.Get(url)
+	resp, err := httpClient.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +34,7 @@ func (c *ScraperClient) GetProducts(brand string) ([]Product, error) {
 		return nil, fmt.Errorf("server returned status %d", resp.StatusCode)
 	}
 
-	var products []Product
+	var products []models.Product
 	if err := json.NewDecoder(resp.Body).Decode(&products); err != nil {
 		return nil, err
 	}

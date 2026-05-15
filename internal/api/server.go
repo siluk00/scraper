@@ -20,6 +20,7 @@ func StartServer() {
 	}
 
 	http.HandleFunc("/lenovo", lenovoHandler)
+	http.HandleFunc("/healthz", healthHandler)
 
 	slog.Info("server starting", "port", port)
 	if err := http.ListenAndServe(port, nil); err != nil {
@@ -29,9 +30,9 @@ func StartServer() {
 
 func lenovoHandler(w http.ResponseWriter, r *http.Request) {
 	baseURL := "https://webscraper.io/test-sites/e-commerce/static/computers/laptops"
-	
+
 	slog.Info("handling request", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
-	
+
 	products, err := scraper.ScrapeProducts(baseURL, "lenovo")
 	if err != nil {
 		slog.Error("request failed", "error", err)
@@ -42,4 +43,9 @@ func lenovoHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(products)
 	slog.Info("request completed", "matches", len(products))
+}
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"status":"ok"}`))
 }
