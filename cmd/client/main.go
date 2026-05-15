@@ -21,6 +21,6 @@ func main() {
 
 	fmt.Printf("Encontrados %d notebooks %s:\n", len(products), *brand)
 	for _, p := range products {
-		fmt.Printf("- %s: $%.2f (%d reviews, %d rating)\n", p.Title, p.Price, p.Reviews, p.Rating)
+		fmt.Printf("- %s: $%.2f (%d reviews, %d rating)\n  URL: %s\n", p.Title, p.Price, p.Reviews, p.Rating, p.Url)
 	}
 }

@@ -35,7 +35,7 @@ func ScrapeProducts(baseURL string, brandFilter string) ([]models.Product, error
 			if err != nil {
 				return nil, false, err
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != http.StatusOK {
 				slog.Warn("pagination stopped", "page", page, "status", resp.StatusCode)

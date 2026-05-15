@@ -7,14 +7,16 @@ import (
 	"testing"
 
 	"github.com/siluk00/scraper/internal/client"
+	"github.com/siluk00/scraper/internal/models"
 )
 
 func TestServerReturnsCorrectLenovo(t *testing.T) {
 	// Mock do retorno da API
-	expectedNotebook := client.Product{
+	expectedNotebook := models.Product{
 		Title:       "Lenovo ThinkPad L570",
 		Price:       999.00,
 		Description: "Lenovo ThinkPad L570, 15.6\" FHD, Core i7-7500U, 8GB, 256GB SSD, Windows 10 Pro",
+		Url:         "https://webscraper.io/test-product",
 		Rating:      3,
 		Reviews:     11,
 	}
@@ -22,7 +24,9 @@ func TestServerReturnsCorrectLenovo(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/lenovo" {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]client.Product{expectedNotebook})
+			if err := json.NewEncoder(w).Encode([]models.Product{expectedNotebook}); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -58,6 +62,9 @@ func TestServerReturnsCorrectLenovo(t *testing.T) {
 			expectedDesc := "Lenovo ThinkPad L570, 15.6\" FHD, Core i7-7500U, 8GB, 256GB SSD, Windows 10 Pro"
 			if p.Description != expectedDesc {
 				t.Errorf("Description mismatch")
+			}
+			if p.Url != "https://webscraper.io/test-product" {
+				t.Errorf("Expected URL https://webscraper.io/test-product, got %s", p.Url)
 			}
 		}
 	}
