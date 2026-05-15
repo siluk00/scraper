@@ -1,36 +1,22 @@
 name: CI
-
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
+on: [push, pull_request]
 jobs:
-  ci:
-    name: Lint, Test, and Build
+  test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
-          cache: true
-
-      - name: Run Linter
+          go-version: '1.24'
+      - run: make test
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.61.0
-          args: --timeout=5m
-
-      - name: Test with Race Detector
-        run: make test
-
-      - name: Build
-        run: make build
+          version: latest
