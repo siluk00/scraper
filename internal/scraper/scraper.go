@@ -13,10 +13,9 @@ import (
 	"golang.org/x/net/html"
 )
 
-func ScrapeProducts(baseURL string, brandFilter string) ([]models.Product, error) {
+func ScrapeProducts(httpClient *http.Client, baseURL string, brandFilter string) ([]models.Product, error) {
 	var allProducts []models.Product
 	page := 1
-	httpClient := client.NewBrowserClient()
 
 	slog.Info("starting scraper", "brand", brandFilter, "url", baseURL)
 
@@ -215,5 +214,5 @@ func getText(n *html.Node) string {
 
 // Keep compatibility
 func ScrapeLenovo(baseURL string) ([]models.Product, error) {
-	return ScrapeProducts(baseURL, "lenovo")
+	return ScrapeProducts(client.BrowserClient, baseURL, "lenovo")
 }

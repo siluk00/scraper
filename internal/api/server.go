@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/siluk00/scraper/internal/client"
 	"github.com/siluk00/scraper/internal/scraper"
 )
 
@@ -23,7 +24,7 @@ func StartServer() {
 	}
 
 	http.HandleFunc("/lenovo", lenovoHandler)
-	http.HandleFunc("/healthz", healthHandler)
+	http.HandleFunc("/healthz", healthzHandler)
 
 	slog.Info("server starting", "port", port)
 	if err := http.ListenAndServe(port, nil); err != nil {
@@ -34,7 +35,7 @@ func StartServer() {
 func lenovoHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("handling request", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
 
-	products, err := scraper.ScrapeProducts(targetURL, "lenovo")
+	products, err := scraper.ScrapeProducts(client.BrowserClient, targetURL, "lenovo")
 	if err != nil {
 		slog.Error("request failed", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -48,7 +49,7 @@ func lenovoHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("request completed", "matches", len(products))
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
+func healthzHandler(w http.ResponseWriter, r *http.Request) {
 	type healthResponse struct {
 		Status          string `json:"status"`
 		TargetReachable bool   `json:"target_reachable"`
@@ -64,16 +65,26 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 
-	if err != nil || resp.StatusCode >= 500 {
-		errMsg := ""
-		if err != nil {
-			errMsg = err.Error()
-		} else {
-			errMsg = http.StatusText(resp.StatusCode)
-			_ = resp.Body.Close()
-		}
+	// 1. Handle network/connectivity errors
+	if err != nil {
+		slog.Warn("healthz degraded (network error)", "error", err, "latency_ms", latency)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(healthResponse{
+			Status:          "degraded",
+			TargetReachable: false,
+			LatencyMs:       latency,
+			Error:           err.Error(),
+		})
+		return
+	}
 
-		slog.Warn("healthz degraded", "error", errMsg, "latency_ms", latency)
+	// At this point, resp is guaranteed to be non-nil
+	defer func() { _ = resp.Body.Close() }()
+
+	// 2. Handle server-side errors from the target
+	if resp.StatusCode >= 500 {
+		errMsg := http.StatusText(resp.StatusCode)
+		slog.Warn("healthz degraded (target server error)", "status", resp.StatusCode, "latency_ms", latency)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(healthResponse{
 			Status:          "degraded",
@@ -83,8 +94,8 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	_ = resp.Body.Close()
 
+	// 3. Success case
 	slog.Debug("healthz ok", "latency_ms", latency)
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(healthResponse{

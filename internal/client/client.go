@@ -46,8 +46,11 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.RoundTrip(req)
 }
 
-// NewBrowserClient returns an http.Client configured to mimic a browser.
-// It should be reused to leverage the connection pool.
+// BrowserClient is a shared http.Client configured to mimic a browser.
+// It should be used to leverage the connection pool across multiple requests.
+var BrowserClient = NewBrowserClient()
+
+// NewBrowserClient returns a new http.Client configured to mimic a browser.
 func NewBrowserClient() *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
@@ -69,4 +72,8 @@ func SetBrowserHeaders(req *http.Request) {
 	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
 	req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Sec-Fetch-Site", "none")
+	req.Header.Set("Sec-Fetch-User", "?1")
 }
