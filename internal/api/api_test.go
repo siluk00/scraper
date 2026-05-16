@@ -6,17 +6,16 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/siluk00/scraper/internal/client"
 	"github.com/siluk00/scraper/internal/models"
 )
 
 func TestServerReturnsCorrectLenovo(t *testing.T) {
-	// Mock do retorno da API
+	// Mock API response
 	expectedNotebook := models.Product{
 		Title:       "Lenovo ThinkPad L570",
 		Price:       999.00,
 		Description: "Lenovo ThinkPad L570, 15.6\" FHD, Core i7-7500U, 8GB, 256GB SSD, Windows 10 Pro",
-		Url:         "https://webscraper.io/test-product",
+		URL:         "https://webscraper.io/test-product",
 		Rating:      3,
 		Reviews:     11,
 	}
@@ -35,11 +34,20 @@ func TestServerReturnsCorrectLenovo(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	// Usando o cliente para chamar o servidor
-	apiClient := client.NewScraperClient(server.URL)
-	products, err := apiClient.GetProducts("lenovo")
+	// Using standard Go client to call the mocked server
+	resp, err := http.Get(server.URL + "/lenovo")
 	if err != nil {
-		t.Fatalf("Client failed to get products: %v", err)
+		t.Fatalf("Failed to call server: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected status OK, got %v", resp.Status)
+	}
+
+	var products []models.Product
+	if err := json.NewDecoder(resp.Body).Decode(&products); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
 	}
 
 	if len(products) == 0 {
@@ -63,8 +71,8 @@ func TestServerReturnsCorrectLenovo(t *testing.T) {
 			if p.Description != expectedDesc {
 				t.Errorf("Description mismatch")
 			}
-			if p.Url != "https://webscraper.io/test-product" {
-				t.Errorf("Expected URL https://webscraper.io/test-product, got %s", p.Url)
+			if p.URL != "https://webscraper.io/test-product" {
+				t.Errorf("Expected URL https://webscraper.io/test-product, got %s", p.URL)
 			}
 		}
 	}

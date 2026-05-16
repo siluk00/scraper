@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/siluk00/scraper/internal/client"
 	"github.com/siluk00/scraper/internal/models"
 	"golang.org/x/net/html"
 )
@@ -16,11 +16,11 @@ import (
 func ScrapeProducts(baseURL string, brandFilter string) ([]models.Product, error) {
 	var allProducts []models.Product
 	page := 1
-	client := &http.Client{Timeout: 10 * time.Second}
+	httpClient := client.NewBrowserClient()
 
 	slog.Info("starting scraper", "brand", brandFilter, "url", baseURL)
 
-	// o primeiro for é um loop por página
+	// main loop for pagination
 	for {
 		url := fmt.Sprintf("%s?page=%d", baseURL, page)
 		slog.Debug("fetching page", "page", page, "url", url)
@@ -31,7 +31,9 @@ func ScrapeProducts(baseURL string, brandFilter string) ([]models.Product, error
 				return nil, false, err
 			}
 
-			resp, err := client.Do(req)
+			client.SetBrowserHeaders(req)
+
+			resp, err := httpClient.Do(req)
 			if err != nil {
 				return nil, false, err
 			}
@@ -47,7 +49,7 @@ func ScrapeProducts(baseURL string, brandFilter string) ([]models.Product, error
 				return nil, false, err
 			}
 
-			// essa é a função recursiva que vai atravesssar os nodes da arvore html
+			// recursive function to traverse the html tree nodes
 			var pageProducts []models.Product
 			var f func(*html.Node)
 			f = func(n *html.Node) {
@@ -64,7 +66,7 @@ func ScrapeProducts(baseURL string, brandFilter string) ([]models.Product, error
 			f(doc)
 
 			slog.Info("page processed", "page", page, "matches", len(pageProducts))
-			return pageProducts, len(pageProducts) == 0 && page > 1, nil
+			return pageProducts, len(pageProducts) == 0, nil
 		}(url)
 
 		if err != nil {
@@ -98,7 +100,7 @@ func brandMatch(p models.Product, brand string) bool {
 		return true
 	}
 
-	// Lógica especial para Lenovo
+	// Special logic for Lenovo
 	if brandLower == "lenovo" {
 		if strings.Contains(titleLower, "thinkpad") || strings.Contains(titleLower, "ideapad") {
 			return true
@@ -131,7 +133,7 @@ func extractProduct(n *html.Node) models.Product {
 				if p.Title == "" {
 					p.Title = getText(m)
 				}
-				p.Url = "https://webscraper.io" + getAttr(m, "href")
+				p.URL = "https://webscraper.io" + getAttr(m, "href")
 			}
 			if hasClass(m, "price") {
 				priceStr := strings.TrimPrefix(getText(m), "$")
@@ -141,7 +143,7 @@ func extractProduct(n *html.Node) models.Product {
 				p.Description = getText(m)
 			}
 			if hasClass(m, "ratings") {
-				// Extrair reviews e rating
+				// Extract reviews and rating
 				p.Reviews = extractReviews(m)
 				p.Rating = extractRating(m)
 			}
@@ -156,7 +158,7 @@ func extractProduct(n *html.Node) models.Product {
 
 func extractReviews(n *html.Node) int {
 	text := getText(n)
-	// Exemplo: "4 reviews"
+	// Example: "4 reviews"
 	fields := strings.Fields(text)
 	if len(fields) > 0 {
 		count, _ := strconv.Atoi(fields[0])
@@ -166,7 +168,7 @@ func extractReviews(n *html.Node) int {
 }
 
 func extractRating(n *html.Node) int {
-	// O rating geralmente está em spans com estrelas
+	// Rating is usually in spans with stars
 	// <p data-rating="3">...
 	var rating int
 	var f func(*html.Node)
@@ -177,7 +179,7 @@ func extractRating(n *html.Node) int {
 				return
 			}
 		}
-		// Alternativa: contar spans com class "glyphicon-star"
+		// Alternative: count spans with "glyphicon-star" class
 		for c := m.FirstChild; c != nil; c = c.NextSibling {
 			f(c)
 		}
@@ -211,7 +213,7 @@ func getText(n *html.Node) string {
 	return strings.TrimSpace(b.String())
 }
 
-// Mantendo compatibilidade
+// Keep compatibility
 func ScrapeLenovo(baseURL string) ([]models.Product, error) {
 	return ScrapeProducts(baseURL, "lenovo")
 }
