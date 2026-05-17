@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"golang.org/x/net/http2"
+
 	utls "github.com/refraction-networking/utls"
 )
 
@@ -23,27 +25,37 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 		port = "443"
 	}
 
-	// 1. Standard TCP connection
 	tcpConn, err := rt.dialer.DialContext(req.Context(), "tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. TLS handshake with Chrome profile - this is where the JA3 is formed
 	uconn := utls.UClient(tcpConn, &utls.Config{ServerName: host}, utls.HelloChrome_Auto)
 	if err := uconn.HandshakeContext(req.Context()); err != nil {
 		_ = uconn.Close()
 		return nil, err
 	}
 
-	// 3. Pass the established TLS connection to the standard HTTP transport
-	t := &http.Transport{
-		DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return uconn, nil
-		},
-		ForceAttemptHTTP2: true,
+	// Verifica o protocolo que foi negociado no ALPN
+	switch uconn.ConnectionState().NegotiatedProtocol {
+	case "h2":
+		// Servidor negociou HTTP/2
+		t := &http2.Transport{}
+		conn, err := t.NewClientConn(uconn)
+		if err != nil {
+			_ = uconn.Close()
+			return nil, err
+		}
+		return conn.RoundTrip(req)
+	default:
+		// HTTP/1.1 ou sem ALPN
+		t := &http.Transport{
+			DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return uconn, nil
+			},
+		}
+		return t.RoundTrip(req)
 	}
-	return t.RoundTrip(req)
 }
 
 // BrowserClient is a shared http.Client configured to mimic a browser.
