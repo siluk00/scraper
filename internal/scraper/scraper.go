@@ -3,23 +3,89 @@ package scraper
 import (
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/siluk00/scraper/internal/client"
 	"github.com/siluk00/scraper/internal/models"
 	"golang.org/x/net/html"
 )
 
+var cache = struct {
+	mu        sync.RWMutex
+	products  []models.Product
+	fetchedAt time.Time
+}{}
+
+const cacheTTL = 5 * time.Minute
+
+const (
+	maxRetries     = 5
+	baseDelay      = 1 * time.Second
+	maxDelay       = 16 * time.Second
+	jitterFraction = 0.3
+	)
+
+func fetchWithRetry(fn func() (*http.Response, error)) (*http.Response, error) {
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential base: 1s, 2s, 4s, 8s.
+			delay := baseDelay * (1 << (attempt - 1))
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+			// Full jitter: multiply by a random factor in [1-jitter, 1+jitter]
+			jitter := 1 + (rand.Float64()*2-1)*jitterFraction
+			sleep := time.Duration(float64(delay) * jitter)
+			slog.Warn("retrying after backoff",
+				"attempt", attempt,
+				"sleep_ms", sleep.Milliseconds(),
+				"error", lastErr,
+			)
+			time.Sleep(sleep)
+		}
+
+		resp, err := fn()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// Retry on 429 and 5xx (server errors).
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			_ = resp.Body.Close()
+			lastErr = fmt.Errorf("status %d", resp.StatusCode)
+			continue
+		}
+
+		return resp, nil
+	}
+	return nil, fmt.Errorf("after %d attempts: %w", maxRetries, lastErr)
+}
+
 func ScrapeProducts(httpClient *http.Client, baseURL string, brandFilter string) ([]models.Product, error) {
+	// First verify cache
+	cache.mu.RLock()
+	if time.Since(cache.fetchedAt) < cacheTTL && len(cache.products) > 0 {
+		cached := make([]models.Product, len(cache.products))
+		copy(cached, cache.products)
+		cache.mu.RUnlock()
+		slog.Info("returning cached products", "count", len(cached), "age_s", int(time.Since(cache.fetchedAt).Seconds()))
+		return cached, nil
+	}
+	cache.mu.RUnlock()
+
 	var allProducts []models.Product
 	page := 1
 
 	slog.Info("starting scraper", "brand", brandFilter, "url", baseURL)
 
-	// main loop for pagination
 	for {
 		url := fmt.Sprintf("%s?page=%d", baseURL, page)
 		slog.Debug("fetching page", "page", page, "url", url)
@@ -29,10 +95,11 @@ func ScrapeProducts(httpClient *http.Client, baseURL string, brandFilter string)
 			if err != nil {
 				return nil, false, err
 			}
-
 			client.SetBrowserHeaders(req)
 
-			resp, err := httpClient.Do(req)
+			resp, err := fetchWithRetry(func() (*http.Response, error) {
+				return httpClient.Do(req)
+			})
 			if err != nil {
 				return nil, false, err
 			}
@@ -48,7 +115,6 @@ func ScrapeProducts(httpClient *http.Client, baseURL string, brandFilter string)
 				return nil, false, err
 			}
 
-			// recursive function to traverse the html tree nodes
 			var pageProducts []models.Product
 			var f func(*html.Node)
 			f = func(n *html.Node) {
@@ -80,10 +146,18 @@ func ScrapeProducts(httpClient *http.Client, baseURL string, brandFilter string)
 		page++
 	}
 
-	slog.Info("scraping completed", "total_products", len(allProducts))
 	sort.Slice(allProducts, func(i, j int) bool {
 		return allProducts[i].Price < allProducts[j].Price
 	})
+
+	slog.Info("scraping completed", "total_products", len(allProducts))
+
+	// Persist to cache.
+	cache.mu.Lock()
+	cache.products = allProducts
+	cache.fetchedAt = time.Now()
+	cache.mu.Unlock()
+
 	return allProducts, nil
 }
 
@@ -99,7 +173,6 @@ func brandMatch(p models.Product, brand string) bool {
 		return true
 	}
 
-	// Special logic for Lenovo
 	if brandLower == "lenovo" {
 		if strings.Contains(titleLower, "thinkpad") || strings.Contains(titleLower, "ideapad") {
 			return true
@@ -111,8 +184,7 @@ func brandMatch(p models.Product, brand string) bool {
 func hasClass(n *html.Node, className string) bool {
 	for _, a := range n.Attr {
 		if a.Key == "class" {
-			classes := strings.Fields(a.Val)
-			for _, c := range classes {
+			for _, c := range strings.Fields(a.Val) {
 				if c == className {
 					return true
 				}
@@ -142,7 +214,6 @@ func extractProduct(n *html.Node) models.Product {
 				p.Description = getText(m)
 			}
 			if hasClass(m, "ratings") {
-				// Extract reviews and rating
 				p.Reviews = extractReviews(m)
 				p.Rating = extractRating(m)
 			}
@@ -157,7 +228,6 @@ func extractProduct(n *html.Node) models.Product {
 
 func extractReviews(n *html.Node) int {
 	text := getText(n)
-	// Example: "4 reviews"
 	fields := strings.Fields(text)
 	if len(fields) > 0 {
 		count, _ := strconv.Atoi(fields[0])
@@ -167,8 +237,6 @@ func extractReviews(n *html.Node) int {
 }
 
 func extractRating(n *html.Node) int {
-	// Rating is usually in spans with stars
-	// <p data-rating="3">...
 	var rating int
 	var f func(*html.Node)
 	f = func(m *html.Node) {
@@ -178,11 +246,9 @@ func extractRating(n *html.Node) int {
 				return
 			}
 		}
-		// Alternative: count spans with "glyphicon-star" class
 		for c := m.FirstChild; c != nil; c = c.NextSibling {
 			f(c)
 		}
-
 	}
 	f(n)
 	return rating
@@ -212,7 +278,7 @@ func getText(n *html.Node) string {
 	return strings.TrimSpace(b.String())
 }
 
-// Keep compatibility
+// ScrapeLenovo keeps backward compatibility.
 func ScrapeLenovo(baseURL string) ([]models.Product, error) {
 	return ScrapeProducts(client.BrowserClient, baseURL, "lenovo")
 }
